@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>WebGL Tut 10</title>
+
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+
+<!-- Fragment Shader -->
+<script id="shader-fs" type="x-shader/x-fragment">
+  precision mediump float;
+
+  varying vec2 vTextureCoord;
+  
+  uniform sampler2D uSampler;
+
+  void main(void) {
+    gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+  }
+</script>
+
+<!-- Vertex Shader -->
+<script id="shader-vs" type="x-shader/x-vertex">
+  attribute vec3 aVertexPosition;
+  attribute vec2 aTextureCoord;
+
+  uniform mat4 uMVMatrix;
+  uniform mat4 uPMatrix;
+
+  varying vec2 vTextureCoord;
+
+  void main(void) {
+    gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+    vTextureCoord = aTextureCoord;
+  }
+</script>
+
+<script type="text/javascript">
+	
+	var gl;
+	var worldVertexPositionBuffer = null;
+	var worldVertexTextureCoordBuffer = null;
+	var mvMatrix = mat4.create();
+	var pMatrix = mat4.create();
+	var mvMatrixStack = [];
+	var shaderProgram;
+	var lastTime = 0;
+	var texture;
+  	var currentlyPressedKeys = {};
+  	var pitch = 0;
+  	var pitchRate = 0;
+  	var yaw = 0;
+  	var yawRate = 0;
+  	var xPos = 0;
+  	var yPos = 0.4;
+  	var zPos = 0;
+  	var speed = 0;
+  	var joggingAngle = 0;								//Used to make us "jog" up and down as we move forward
+
+
+	function initGL(canvas) {
+		try{
+			gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+			gl.viewPortWidth = canvas.width;
+			gl.viewPortHeight = canvas.height;
+		} catch(e) {}
+
+		if(!gl) {
+			alert("Could not initialise WebGL");
+		}
+	}
+
+	function getShader(gl, id) {
+		var shaderScript, theSource, currentChild, shader;
+  
+		shaderScript = document.getElementById(id);
+
+		if (!shaderScript) {
+		return null;
+		}
+
+		theSource = "";
+		currentChild = shaderScript.firstChild;
+
+		while(currentChild) {
+			if (currentChild.nodeType == currentChild.TEXT_NODE) {
+			  theSource += currentChild.textContent;
+			}
+
+			currentChild = currentChild.nextSibling;
+		}
+
+		if(shaderScript.type == "x-shader/x-fragment")
+			shader = gl.createShader(gl.FRAGMENT_SHADER);
+		else if(shaderScript.type == "x-shader/x-vertex")
+			shader = gl.createShader(gl.VERTEX_SHADER);
+		else
+			return null;
+
+		gl.shaderSource(shader, theSource);
+		gl.compileShader(shader);
+
+		if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+			alert(gl.getShaderInfoLog(shader));
+			return null;
+		}
+
+		return shader;			
+	}
+
+	function initShaders() {
+		var fragmentShader = getShader(gl, "shader-fs");
+		var vertexShader = getShader(gl, "shader-vs");
+
+		shaderProgram = gl.createProgram();
+		gl.attachShader(shaderProgram, vertexShader);
+		gl.attachShader(shaderProgram, fragmentShader);
+		gl.linkProgram(shaderProgram);
+
+		if(!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+			alert("Could not initialise shaders");
+		}
+
+		gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+	}
+
+	function handleLoadedTexture(texture) {
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function initTexture() {
+		texture = gl.createTexture();
+        texture.image = new Image();
+        texture.image.onload = function () {
+            handleLoadedTexture(texture)
+        }
+
+        //IMPORTANT: image size MUST BE in POWER-OF-2!!!
+        texture.image.src = "mud.gif";
+	}
+
+	function handleKeyDown(event) {
+		currentlyPressedKeys[event.keyCode] = true;
+ 	}
+
+ 	function handleKeyUp(event) {
+ 		currentlyPressedKeys[event.keyCode] = false;
+ 	}
+
+ 	function handleKeys() {
+ 		//"A" key
+ 		if(currentlyPressedKeys[65])
+ 			yawRate = 0.1;
+ 		//"D" key
+ 		else if(currentlyPressedKeys[68])
+ 			yawRate = -0.1;
+ 		else
+ 			yawRate = 0;
+
+ 		//"W" key
+ 		if(currentlyPressedKeys[87])
+ 			speed = 0.003;
+ 		//"S" key
+ 		else if(currentlyPressedKeys[83])
+ 			speed = -0.003;
+ 		else
+ 			speed = 0;
+
+ 		//"Up" key
+ 		if(currentlyPressedKeys[38])
+ 			pitchRate = 0.1;
+ 		//"Down" key
+ 		else if(currentlyPressedKeys[40])
+ 			pitchRate = -0.1;
+ 		else
+ 			pitchRate = 0;
+ 	}
+
+    function degToRad(degrees) {
+    	return (degrees / 180) * Math.PI;
+    }
+
+    function mvPushMatrix() {
+        var copy = mat4.create();
+        mat4.set(mvMatrix, copy);
+        mvMatrixStack.push(copy);
+    }
+
+    function mvPopMatrix() {
+        if (mvMatrixStack.length == 0) {
+            throw "Invalid popMatrix!";
+        }
+        mvMatrix = mvMatrixStack.pop();
+    }
+
+	function setMatrixUniforms() {
+		gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+		gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+	}
+
+	function handleLoadedWorld(data) {
+		var lines = data.split("\n");
+		var vertexCount = 0;
+		var vertexPositions = [];
+		var vertexTextureCoords = [];
+		for(var i in lines) {
+			var vals = lines[i].replace(/^\s+/, "").split(/\s+/);
+			if(vals.length == 5 && vals[0] != "//") {
+				//It is a line describing a vertex; get X, Y, and Z first
+				vertexPositions.push(parseFloat(vals[0]));
+				vertexPositions.push(parseFloat(vals[1]));
+				vertexPositions.push(parseFloat(vals[2]));
+
+				//And then get the texture coords
+				vertexTextureCoords.push(parseFloat(vals[3]));
+				vertexTextureCoords.push(parseFloat(vals[4]));
+
+				vertexCount += 1;
+			}
+		}
+
+		worldVertexPositionBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, worldVertexPositionBuffer);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPositions), gl.STATIC_DRAW);
+		worldVertexPositionBuffer.itemSize = 3;
+		worldVertexPositionBuffer.numItems = vertexCount;
+
+		worldVertexTextureCoordBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, worldVertexTextureCoordBuffer);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexTextureCoords), gl.STATIC_DRAW);
+		worldVertexTextureCoordBuffer.itemSize = 2;
+		worldVertexTextureCoordBuffer.numItems = vertexCount;
+
+		document.getElementById("loadingText").textContent = "";
+	}
+
+	function loadWorld() {
+		var request = new XMLHttpRequest();
+		request.open("GET", "world.txt");
+		request.onreadystatechange = function() {
+			//ready state 4 is when the file has been completely loaded
+			if(request.readyState == 4)
+				handleLoadedWorld(request.responseText);
+		}
+
+		request.send();
+	}
+
+	function drawScene() {
+		gl.viewport(0, 0, gl.viewPortWidth, gl.viewPortHeight);
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+		if(worldVertexPositionBuffer == null || worldVertexTextureCoordBuffer == null)
+			return;
+
+		//FOV, aspect ratio, near clipping plane, far clipping plane, projection matrix
+		mat4.perspective(45, gl.viewPortWidth / gl.viewPortHeight, 0.1, 100.0, pMatrix);
+
+		//Position scene relative to camera which has absolute position of (0, 0, 0)
+		mat4.identity(mvMatrix);
+		mat4.rotate(mvMatrix, degToRad(-pitch), [1, 0, 0]);
+		mat4.rotate(mvMatrix, degToRad(-yaw), [0, 1, 0]);
+		mat4.translate(mvMatrix, [-xPos, -yPos, -zPos]);
+
+		//Use the texture
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, texture);
+		gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+		//Send the vertex positions to the vertex shader
+		gl.bindBuffer(gl.ARRAY_BUFFER, worldVertexPositionBuffer);
+		gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, worldVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+		//Send the texture coordinates to the vertex shader
+		gl.bindBuffer(gl.ARRAY_BUFFER, worldVertexTextureCoordBuffer);
+		gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, worldVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+		setMatrixUniforms();
+		gl.drawArrays(gl.TRIANGLES, 0, worldVertexPositionBuffer.numItems);
+	}
+
+	function animate() {
+		var date = new Date();
+		var timeNow = date.getTime();
+		if(lastTime != 0) {
+			var elapsed = timeNow - lastTime;
+
+			if(speed != 0) {
+				xPos -= Math.sin(degToRad(yaw)) * speed * elapsed;
+				zPos -= Math.cos(degToRad(yaw)) * speed * elapsed;
+
+				joggingAngle += elapsed * 0.7; //"fiddle factor", make it more realistic
+				yPos = Math.sin(degToRad(joggingAngle)) / 20 + 0.4;
+			}
+			yaw += yawRate * elapsed;
+			pitch += pitchRate * elapsed;
+		}
+		lastTime = timeNow;
+	}
+
+	function tick() {
+		requestAnimFrame(tick);
+		handleKeys();
+		drawScene();
+		animate();
+	}
+
+	function webGLStart() {
+		var canvas = document.getElementById("canvas");
+
+		initGL(canvas);
+		initShaders();
+		initTexture();
+		loadWorld();
+
+		gl.clearColor(0.0, 0.0, 0.0, 1.0);
+		gl.enable(gl.DEPTH_TEST);
+
+		document.onkeydown = handleKeyDown;
+		document.onkeyup = handleKeyUp;
+
+		tick();
+	}
+</script>
+
+<style type="text/css">
+	#canvas {
+		border: 1px solid #000000;
+	}
+
+	#loadingText {
+		position: absolute;
+		top: 250px;
+		left: 150px;
+		font-size: 2em;
+		color: white;
+	}
+
+	#sidebar {
+		position: absolute;
+		top: 30px;
+		bottom: 30px;
+		right: 30px;
+		width: 500px;
+		border-left: solid;
+		padding-left: 30px;
+	}
+</style>
+
+</head>
+
+<body onload="webGLStart();">
+	<header>
+		<h1>WebGL Tut 10</h1>
+		<div>Loading a world, and the most basic kind of camera</div>
+	</header></br>
+	
+	<article>
+		<canvas id="canvas" width="700" height="500"></canvas>
+		<div id="loadingText">Loading world...</div></br>
+
+	</article></br>
+
+	<section id="sidebar">
+		<article>
+			<b><u>Controls</u></b>
+		    <ul>
+		        <li><code>WASD</code> to run around
+		        <li><code>Up</code>/<code>Down</code> keys to look up and down
+		    </ul>
+		</article>
+	</section>
+	
+	<footer>
+		Reference: <a href="http://learningwebgl.com/blog/?p=1067">WebGL Lesson 10 - Loading a world, and the most basic kind of camera</a>
+	</footer>
+	
+</body>
+</html>
